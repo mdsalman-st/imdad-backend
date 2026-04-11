@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const bcrypt = require('bcryptjs'); 
 require('dotenv').config();
 
 const app = express();
@@ -14,16 +15,17 @@ mongoose.connect(process.env.MONGO_URI)
 
 // ========== SCHEMAS ==========
 
-// Madrasa Schema
+// 1. Madrasa Schema
 const madrasaSchema = new mongoose.Schema({
   madrasaName: { type: String, required: true },
-  contactPerson: { type: String, required: true },
+  mohtamim: { type: String, required: true }, 
   district: { type: String, required: true },
-  state: { type: String, required: true },
+  state: { type: String }, 
   upiId: { type: String, required: true },
-  phone: { type: String, required: true },
+  phone: { type: String, required: true, unique: true }, 
+  password: { type: String, required: true }, 
   email: String,
-  needReason: { type: String, required: true },
+  needReason: { type: String }, 
   urgencyLevel: { type: Number, default: 80 },
   description: String,
   address: String,
@@ -31,7 +33,15 @@ const madrasaSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// Donation Schema
+// 2. Donor Schema
+const donorSchema = new mongoose.Schema({
+  fullName: { type: String, required: true },
+  phone: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// 3. Donation Schema
 const donationSchema = new mongoose.Schema({
   receiptNo: { type: String, unique: true },
   donorName: { type: String, required: true },
@@ -46,7 +56,7 @@ const donationSchema = new mongoose.Schema({
   date: { type: Date, default: Date.now }
 });
 
-// Contact Schema
+// 4. Contact Schema
 const contactSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true },
@@ -56,7 +66,7 @@ const contactSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// Volunteer Schema
+// 5. Volunteer Schema
 const volunteerSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
   email: { type: String, required: true },
@@ -68,13 +78,15 @@ const volunteerSchema = new mongoose.Schema({
   appliedOn: { type: Date, default: Date.now }
 });
 
-// Subscriber Schema
+// 6. Subscriber Schema
 const subscriberSchema = new mongoose.Schema({
   email: { type: String, unique: true },
   subscribedAt: { type: Date, default: Date.now }
 });
 
+// Models Registration
 const Madrasa = mongoose.model('Madrasa', madrasaSchema);
+const Donor = mongoose.model('Donor', donorSchema);
 const Donation = mongoose.model('Donation', donationSchema);
 const Contact = mongoose.model('Contact', contactSchema);
 const Volunteer = mongoose.model('Volunteer', volunteerSchema);
@@ -82,14 +94,79 @@ const Subscriber = mongoose.model('Subscriber', subscriberSchema);
 
 // ========== API ROUTES ==========
 
-// 1. Madrasa Registration
-app.post('/api/madrasas/register', async (req, res) => {
+// 🟢 1A. Madrasa Registration (Secure + DeepSeek Update)
+app.post('/api/register/madrasa', async (req, res) => {
   try {
-    const madrasa = new Madrasa(req.body);
-    await madrasa.save();
-    res.json({ success: true, message: 'Registration submitted! Pending approval.' });
+    const { madrasaName, mohtamim, phone, district, upi, password } = req.body;
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const newMadrasa = new Madrasa({
+      madrasaName, mohtamim, phone, district, upiId: upi, password: hashedPassword
+    });
+    
+    await newMadrasa.save();
+    res.json({ success: true, message: 'Madrasa registration successful! Verification pending.' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // 💡 DEEPSEEK UPDATE: Duplicate Entry Error (11000)
+    if (err.code === 11000) {
+      return res.status(400).json({ success: false, error: 'Ye Number pehle se register hai!' });
+    }
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 🟢 1B. Donor Registration (Secure + DeepSeek Update)
+app.post('/api/register/donor', async (req, res) => {
+  try {
+    const { fullName, phone, password } = req.body;
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const newDonor = new Donor({ fullName, phone, password: hashedPassword });
+    
+    await newDonor.save();
+    res.json({ success: true, message: 'Donor account created successfully!' });
+  } catch (err) {
+    // 💡 DEEPSEEK UPDATE: Duplicate Entry Error (11000)
+    if (err.code === 11000) {
+      return res.status(400).json({ success: false, error: 'Ye Number pehle se register hai!' });
+    }
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 🟢 1C. Universal Login (Madrasa & Donor dono ke liye + DeepSeek Update)
+app.post('/api/login', async (req, res) => {
+  try {
+    const { phone, password } = req.body;
+    
+    let user = await Donor.findOne({ phone });
+    let role = 'donor';
+
+    if (!user) {
+        user = await Madrasa.findOne({ phone });
+        role = 'madrasa';
+    }
+
+    if (!user) return res.status(400).json({ success: false, error: 'Account nahi mila. Pehle register karein.'});
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ success: false, error: 'Galat password!'});
+
+    // 💡 DEEPSEEK UPDATE: Added userId and phone in response
+    res.json({ 
+        success: true, 
+        message: 'Login successful!', 
+        role: role, 
+        name: user.madrasaName || user.fullName,
+        userId: user._id, 
+        phone: user.phone 
+    });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
