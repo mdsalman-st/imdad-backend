@@ -9,20 +9,17 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Multer setup for file uploads
 const upload = multer({ 
   storage: multer.memoryStorage(), 
   limits: { fileSize: 5 * 1024 * 1024 } 
 });
 
-// MongoDB Connection
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ Error:', err));
 
 // ========== SCHEMAS ==========
 
-// 1. Madrasa Schema
 const madrasaSchema = new mongoose.Schema({
   madrasaName: { type: String, required: true },
   mohtamim: { type: String, required: true }, 
@@ -43,7 +40,6 @@ const madrasaSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// 2. Donor Schema
 const donorSchema = new mongoose.Schema({
   fullName: { type: String, required: true },
   phone: { type: String, required: true, unique: true },
@@ -51,7 +47,7 @@ const donorSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// 3. Donation Schema
+// 🆕 FIX 1: Added status field
 const donationSchema = new mongoose.Schema({
   receiptNo: { type: String, unique: true },
   donorName: { type: String, required: true },
@@ -63,10 +59,10 @@ const donationSchema = new mongoose.Schema({
   donationType: String,
   intention: String,
   onBehalfOf: String,
+  status: { type: String, enum: ['Pending', 'Received', 'Failed'], default: 'Pending' },
   date: { type: Date, default: Date.now }
 });
 
-// 4. Contact Schema
 const contactSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true },
@@ -76,13 +72,11 @@ const contactSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// 5. Subscriber Schema
 const subscriberSchema = new mongoose.Schema({
   email: { type: String, unique: true },
   subscribedAt: { type: Date, default: Date.now }
 });
 
-// Models
 const Madrasa = mongoose.model('Madrasa', madrasaSchema);
 const Donor = mongoose.model('Donor', donorSchema);
 const Donation = mongoose.model('Donation', donationSchema);
@@ -91,7 +85,6 @@ const Subscriber = mongoose.model('Subscriber', subscriberSchema);
 
 // ========== API ROUTES ==========
 
-// 🟢 Madrasa Registration (WITH FILES)
 app.post('/api/register/madrasa', upload.fields([
   { name: 'aadhaarDoc', maxCount: 1 },
   { name: 'panDoc', maxCount: 1 },
@@ -99,21 +92,17 @@ app.post('/api/register/madrasa', upload.fields([
 ]), async (req, res) => {
   try {
     const { madrasaName, mohtamim, phone, district, upi, password } = req.body;
-    
     if (!req.files || !req.files.aadhaarDoc || !req.files.panDoc || !req.files.madrasaProof) {
       return res.status(400).json({ success: false, error: 'All KYC documents required!' });
     }
-
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
-
     const newMadrasa = new Madrasa({
       madrasaName, mohtamim, phone, district, upiId: upi, password: hashedPassword,
       aadhaarDoc: { data: req.files.aadhaarDoc[0].buffer, contentType: req.files.aadhaarDoc[0].mimetype },
       panDoc: { data: req.files.panDoc[0].buffer, contentType: req.files.panDoc[0].mimetype },
       madrasaProof: { data: req.files.madrasaProof[0].buffer, contentType: req.files.madrasaProof[0].mimetype }
     });
-
     await newMadrasa.save();
     res.json({ success: true, message: 'Madrasa registration successful! Verification pending.' });
   } catch (err) {
@@ -122,7 +111,6 @@ app.post('/api/register/madrasa', upload.fields([
   }
 });
 
-// 🟢 Donor Registration
 app.post('/api/register/donor', async (req, res) => {
   try {
     const { fullName, phone, password } = req.body;
@@ -137,7 +125,6 @@ app.post('/api/register/donor', async (req, res) => {
   }
 });
 
-// 🟢 Universal Login
 app.post('/api/login', async (req, res) => {
   try {
     const { phone, password } = req.body;
@@ -148,12 +135,9 @@ app.post('/api/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ success: false, error: 'Galat password!' });
     res.json({ success: true, role, name: user.madrasaName || user.fullName, userId: user._id, phone: user.phone });
-  } catch(err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
+  } catch(err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
-// Get all active madrasas
 app.get('/api/madrasas', async (req, res) => {
   try {
     const madrasas = await Madrasa.find({ status: 'active' }).select('-aadhaarDoc -panDoc -madrasaProof -password').sort({ urgencyLevel: -1 });
@@ -161,7 +145,6 @@ app.get('/api/madrasas', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Get single madrasa
 app.get('/api/madrasas/:id', async (req, res) => {
   try {
     const madrasa = await Madrasa.findById(req.params.id).select('-aadhaarDoc -panDoc -madrasaProof -password');
@@ -170,7 +153,6 @@ app.get('/api/madrasas/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Create donation
 app.post('/api/donations', async (req, res) => {
   try {
     const receiptNo = 'IMD-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
@@ -180,7 +162,6 @@ app.post('/api/donations', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Get donations by email
 app.get('/api/donations/:email', async (req, res) => {
   try {
     const donations = await Donation.find({ donorEmail: req.params.email }).sort({ date: -1 });
@@ -188,15 +169,29 @@ app.get('/api/donations/:email', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Contact form
-app.post('/api/contact', async (req, res) => {
+// 🆕 FIX 2: Get donations by Madrasa UPI
+app.get('/api/donations/madrasa/:upi', async (req, res) => {
   try {
-    await Contact.create(req.body);
-    res.json({ success: true, message: 'Message sent!' });
+    const donations = await Donation.find({ madrasaUpi: req.params.upi }).sort({ date: -1 });
+    res.json(donations);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Newsletter subscribe
+// 🆕 FIX 3: Update donation status
+app.put('/api/donations/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    const updated = await Donation.findByIdAndUpdate(req.params.id, { status }, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Donation not found' });
+    res.json({ success: true, message: `Donation marked as ${status}` });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/contact', async (req, res) => {
+  try { await Contact.create(req.body); res.json({ success: true, message: 'Message sent!' }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.post('/api/subscribe', async (req, res) => {
   try {
     const existing = await Subscriber.findOne({ email: req.body.email });
@@ -206,7 +201,6 @@ app.post('/api/subscribe', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Admin - Get pending madrasas
 app.get('/api/admin/pending', async (req, res) => {
   try {
     const pending = await Madrasa.find({ status: 'pending' }).select('-password');
@@ -214,23 +208,23 @@ app.get('/api/admin/pending', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Admin - Approve madrasa
 app.put('/api/admin/approve/:id', async (req, res) => {
-  try {
-    await Madrasa.findByIdAndUpdate(req.params.id, { status: 'active' });
-    res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  try { await Madrasa.findByIdAndUpdate(req.params.id, { status: 'active' }); res.json({ success: true }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Admin - Reject madrasa
 app.put('/api/admin/reject/:id', async (req, res) => {
+  try { await Madrasa.findByIdAndUpdate(req.params.id, { status: 'rejected' }); res.json({ success: true }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/donations/admin', async (req, res) => {
   try {
-    await Madrasa.findByIdAndUpdate(req.params.id, { status: 'rejected' });
-    res.json({ success: true });
+    const donations = await Donation.find().sort({ date: -1 }).limit(50);
+    res.json(donations);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Stats
 app.get('/api/stats', async (req, res) => {
   try {
     const madrasas = await Madrasa.countDocuments({ status: 'active' });
@@ -240,6 +234,5 @@ app.get('/api/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`))
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
