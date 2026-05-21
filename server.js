@@ -29,6 +29,9 @@ const madrasaSchema = new mongoose.Schema({
   phone: { type: String, required: true, unique: true }, 
   password: { type: String, required: true }, 
   email: String,
+  totalStudents: { type: Number, default: 0 },
+  totalTeachers: { type: Number, default: 0 },
+  monthlyExpense: { type: Number, default: 0 },
   needReason: { type: String }, 
   urgencyLevel: { type: Number, default: 80 },
   description: String,
@@ -76,7 +79,6 @@ const subscriberSchema = new mongoose.Schema({
   subscribedAt: { type: Date, default: Date.now }
 });
 
-// ========== NEW: NEED SCHEMA ==========
 const needSchema = new mongoose.Schema({
   madrasaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Madrasa', required: true },
   title: { type: String, required: true },
@@ -92,7 +94,7 @@ const Donor = mongoose.model('Donor', donorSchema);
 const Donation = mongoose.model('Donation', donationSchema);
 const Contact = mongoose.model('Contact', contactSchema);
 const Subscriber = mongoose.model('Subscriber', subscriberSchema);
-const Need = mongoose.model('Need', needSchema); // NEW
+const Need = mongoose.model('Need', needSchema);
 
 // ========== API ROUTES ==========
 
@@ -163,6 +165,25 @@ app.get('/api/madrasas/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ========== FIX: ADDED PUT ROUTE FOR MADRASA PROFILE UPDATE ==========
+app.put('/api/madrasas/:id', async (req, res) => {
+  try {
+    const madrasa = await Madrasa.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true, runValidators: true }
+    ).select('-password -aadhaarDoc -panDoc -madrasaProof');
+    
+    if (!madrasa) {
+      return res.status(404).json({ error: 'Madrasa not found' });
+    }
+    
+    res.json(madrasa);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/donations', async (req, res) => {
   try {
     const receiptNo = 'IMD-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
@@ -231,7 +252,6 @@ app.get('/api/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ========== NEW: NEEDS API ROUTES ==========
 app.get('/api/needs/madrasa/:id', async (req, res) => {
   try {
     const needs = await Need.find({ madrasaId: req.params.id }).sort({ createdAt: -1 });
