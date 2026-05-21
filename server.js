@@ -76,11 +76,23 @@ const subscriberSchema = new mongoose.Schema({
   subscribedAt: { type: Date, default: Date.now }
 });
 
+// ========== NEW: NEED SCHEMA ==========
+const needSchema = new mongoose.Schema({
+  madrasaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Madrasa', required: true },
+  title: { type: String, required: true },
+  category: { type: String, required: true },
+  cost: { type: Number, required: true },
+  urgencyLevel: { type: Number, default: 80 },
+  description: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now }
+});
+
 const Madrasa = mongoose.model('Madrasa', madrasaSchema);
 const Donor = mongoose.model('Donor', donorSchema);
 const Donation = mongoose.model('Donation', donationSchema);
 const Contact = mongoose.model('Contact', contactSchema);
 const Subscriber = mongoose.model('Subscriber', subscriberSchema);
+const Need = mongoose.model('Need', needSchema); // NEW
 
 // ========== API ROUTES ==========
 
@@ -216,6 +228,21 @@ app.get('/api/stats', async (req, res) => {
     const donations = await Donation.countDocuments();
     const totalAmount = await Donation.aggregate([{ $group: { _id: null, total: { $sum: '$amount' } } }]);
     res.json({ madrasas, donations, totalAmount: totalAmount[0]?.total || 0 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ========== NEW: NEEDS API ROUTES ==========
+app.get('/api/needs/madrasa/:id', async (req, res) => {
+  try {
+    const needs = await Need.find({ madrasaId: req.params.id }).sort({ createdAt: -1 });
+    res.json(needs);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/needs', async (req, res) => {
+  try {
+    const need = await Need.create(req.body);
+    res.status(201).json(need);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
