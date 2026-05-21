@@ -86,6 +86,7 @@ const needSchema = new mongoose.Schema({
   cost: { type: Number, required: true },
   urgencyLevel: { type: Number, default: 80 },
   description: { type: String, default: '' },
+  status: { type: String, enum: ['Active', 'Fulfilled'], default: 'Active' },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -264,6 +265,52 @@ app.post('/api/needs', async (req, res) => {
     const need = await Need.create(req.body);
     res.status(201).json(need);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ========== NEW: EDIT, DELETE & STATUS ROUTES ==========
+app.put('/api/needs/:id', async (req, res) => {
+  try {
+    const updatedNeed = await Need.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true, runValidators: true }
+    );
+    if (!updatedNeed) {
+      return res.status(404).json({ error: 'Need not found' });
+    }
+    res.json(updatedNeed);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/needs/:id', async (req, res) => {
+  try {
+    const deletedNeed = await Need.findByIdAndDelete(req.params.id);
+    if (!deletedNeed) {
+      return res.status(404).json({ error: 'Need not found' });
+    }
+    res.json({ success: true, message: 'Need deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/needs/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    const updatedNeed = await Need.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true }
+    );
+    if (!updatedNeed) {
+      return res.status(404).json({ error: 'Need not found' });
+    }
+    res.json(updatedNeed);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
