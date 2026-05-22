@@ -3,19 +3,39 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcryptjs'); 
 const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ========== MULTER SETUP (7 FILES) ==========
-const upload = multer({ 
-  storage: multer.memoryStorage(), 
-  limits: { fileSize: 5 * 1024 * 1024 } // 5MB per file
+// ========== CLOUDINARY CONFIG ==========
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Multi-file upload middleware for madrasa registration
+// ========== CLOUDINARY STORAGE ==========
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'imdad_madaris',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'],
+    transformation: [{ width: 1000, height: 1000, crop: 'limit', quality: 'auto' }],
+    type: 'authenticated',
+    sign_url: true,
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: { fileSize: 5 * 1024 * 1024 }
+});
+
+// Multi-file upload middleware
 const madrasaUpload = upload.fields([
   { name: 'aadhaarDoc', maxCount: 1 },
   { name: 'panDoc', maxCount: 1 },
@@ -71,35 +91,62 @@ const madrasaSchema = new mongoose.Schema({
   // Login
   password: { type: String, required: true },
   
-  // Extra fields (for future use)
+  // Extra fields
   monthlyExpense: { type: Number, default: 0 },
   needReason: { type: String, default: '' },
   urgencyLevel: { type: Number, default: 80 },
   description: { type: String, default: '' },
-  address: { type: String, default: '' }, // combined address string
+  address: { type: String, default: '' },
   
   // Status
   status: { type: String, default: 'pending' },
   
-  // KYC Documents (5 docs)
-  aadhaarDoc: { data: Buffer, contentType: String },
-  panDoc: { data: Buffer, contentType: String },
-  madrasaProof: { data: Buffer, contentType: String },
-  trustDeed: { data: Buffer, contentType: String },
-  passbook: { data: Buffer, contentType: String },
-  
-  // Photos (2 photos)
-  frontPhoto: { data: Buffer, contentType: String },
-  classroomPhoto: { data: Buffer, contentType: String },
+  // 🔥 CLOUDINARY DOCUMENTS (URLs instead of Buffer)
+  documents: {
+    aadhaarDoc: {
+      url: String,
+      public_id: String,
+      secure_url: String
+    },
+    panDoc: {
+      url: String,
+      public_id: String,
+      secure_url: String
+    },
+    madrasaProof: {
+      url: String,
+      public_id: String,
+      secure_url: String
+    },
+    trustDeed: {
+      url: String,
+      public_id: String,
+      secure_url: String
+    },
+    passbook: {
+      url: String,
+      public_id: String,
+      secure_url: String
+    },
+    frontPhoto: {
+      url: String,
+      public_id: String,
+      secure_url: String
+    },
+    classroomPhoto: {
+      url: String,
+      public_id: String,
+      secure_url: String
+    }
+  },
   
   createdAt: { type: Date, default: Date.now }
 });
 
-// Auto-calculate totals before save
+// Auto-calculate totals
 madrasaSchema.pre('save', function(next) {
   this.totalStudents = (this.maleStudents || 0) + (this.femaleStudents || 0);
   this.totalTeachers = (this.maleTeachers || 0) + (this.femaleTeachers || 0);
-  // Combined address
   this.address = `${this.streetAddress || ''}, ${this.city || ''}, ${this.district || ''} - ${this.pincode || ''}`.trim();
   next();
 });
@@ -144,11 +191,8 @@ const donationSchema = new mongoose.Schema({
 });
 
 const contactSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  email: { type: String, required: true },
-  phone: String,
-  subject: { type: String, required: true },
-  message: { type: String, required: true },
+  name: String, email: String, phone: String,
+  subject: String, message: String,
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -159,11 +203,9 @@ const subscriberSchema = new mongoose.Schema({
 
 const needSchema = new mongoose.Schema({
   madrasaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Madrasa', required: true },
-  title: { type: String, required: true },
-  category: { type: String, required: true },
-  cost: { type: Number, required: true },
+  title: String, category: String, cost: Number,
   urgencyLevel: { type: Number, default: 80 },
-  description: { type: String, default: '' },
+  description: String,
   status: { type: String, enum: ['Active', 'Fulfilled'], default: 'Active' },
   createdAt: { type: Date, default: Date.now }
 });
@@ -177,7 +219,7 @@ const Need = mongoose.model('Need', needSchema);
 
 // ========== API ROUTES ==========
 
-// ---------- MADRASA REGISTRATION (UPGRADED) ----------
+// ---------- MADRASA REGISTRATION (CLOUDINARY) ----------
 app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
   try {
     const {
@@ -185,8 +227,7 @@ app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
       mohtamim, phone, email,
       streetAddress, city, district, pincode,
       maleStudents, femaleStudents, maleTeachers, femaleTeachers, educationLevel,
-      upi, accountNumber, ifsc, bankName,
-      password
+      upi, accountNumber, ifsc, bankName, password
     } = req.body;
 
     // Check required files
@@ -204,6 +245,17 @@ app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
+    // Build documents object from Cloudinary response
+    const documents = {};
+    requiredFiles.forEach(field => {
+      const file = req.files[field][0];
+      documents[field] = {
+        url: file.path,
+        secure_url: file.secure_url,
+        public_id: file.filename || file.public_id
+      };
+    });
+
     // Create new madrasa
     const newMadrasa = new Madrasa({
       madrasaName, board, category,
@@ -220,22 +272,14 @@ app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
       upiId: upi,
       accountNumber, ifsc: ifsc.toUpperCase(), bankName,
       password: hashedPassword,
-      
-      // Documents
-      aadhaarDoc: { data: req.files.aadhaarDoc[0].buffer, contentType: req.files.aadhaarDoc[0].mimetype },
-      panDoc: { data: req.files.panDoc[0].buffer, contentType: req.files.panDoc[0].mimetype },
-      madrasaProof: { data: req.files.madrasaProof[0].buffer, contentType: req.files.madrasaProof[0].mimetype },
-      trustDeed: { data: req.files.trustDeed[0].buffer, contentType: req.files.trustDeed[0].mimetype },
-      passbook: { data: req.files.passbook[0].buffer, contentType: req.files.passbook[0].mimetype },
-      frontPhoto: { data: req.files.frontPhoto[0].buffer, contentType: req.files.frontPhoto[0].mimetype },
-      classroomPhoto: { data: req.files.classroomPhoto[0].buffer, contentType: req.files.classroomPhoto[0].mimetype }
+      documents: documents
     });
 
     await newMadrasa.save();
     
     res.json({ 
       success: true, 
-      message: 'Registration submitted! Pending verification.',
+      message: '✅ Registration submitted! Pending verification.',
       madrasaId: newMadrasa._id 
     });
 
@@ -243,6 +287,7 @@ app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
     if (err.code === 11000) {
       return res.status(400).json({ success: false, error: 'Phone number already registered!' });
     }
+    console.error('Registration error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -274,59 +319,41 @@ app.post('/api/login', async (req, res) => {
     if (!user) return res.status(400).json({ success: false, error: 'Account not found.' });
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ success: false, error: 'Wrong password!' });
-    res.json({ 
-      success: true, 
-      role, 
-      name: user.madrasaName || user.fullName, 
-      userId: user._id, 
-      phone: user.phone 
-    });
-  } catch(err) { 
-    res.status(500).json({ success: false, error: err.message }); 
-  }
+    res.json({ success: true, role, name: user.madrasaName || user.fullName, userId: user._id, phone: user.phone });
+  } catch(err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
-// ---------- GET ALL MADRASAS ----------
+// ---------- GET ALL MADRASAS (Public - no documents) ----------
 app.get('/api/madrasas', async (req, res) => {
   try {
-    const madrasas = await Madrasa.find({ status: 'active' })
-      .select('-password -aadhaarDoc -panDoc -madrasaProof -trustDeed -passbook -frontPhoto -classroomPhoto');
+    const madrasas = await Madrasa.find({ status: 'active' }).select('-password -documents');
     res.json(madrasas);
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ---------- GET SINGLE MADRASA ----------
+// ---------- GET SINGLE MADRASA (Public) ----------
 app.get('/api/madrasas/:id', async (req, res) => {
   try {
-    const madrasa = await Madrasa.findById(req.params.id)
-      .select('-password -aadhaarDoc -panDoc -madrasaProof -trustDeed -passbook -frontPhoto -classroomPhoto');
+    const madrasa = await Madrasa.findById(req.params.id).select('-password -documents');
     if (!madrasa) return res.status(404).json({ error: 'Not found' });
     res.json(madrasa);
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ---------- UPDATE MADRASA PROFILE ----------
+// ---------- UPDATE MADRASA ----------
 app.put('/api/madrasas/:id', async (req, res) => {
   try {
-    // Don't allow password update through this route
     const updateData = { ...req.body };
     delete updateData.password;
+    delete updateData.documents;
     
     const madrasa = await Madrasa.findByIdAndUpdate(
-      req.params.id,
-      updateData,
-      { new: true, runValidators: true }
-    ).select('-password -aadhaarDoc -panDoc -madrasaProof -trustDeed -passbook -frontPhoto -classroomPhoto');
+      req.params.id, updateData, { new: true, runValidators: true }
+    ).select('-password -documents');
     
-    if (!madrasa) return res.status(404).json({ error: 'Madrasa not found' });
+    if (!madrasa) return res.status(404).json({ error: 'Not found' });
     res.json(madrasa);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---------- DONATIONS ----------
@@ -335,46 +362,34 @@ app.post('/api/donations', async (req, res) => {
     const receiptNo = 'IMD-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
     await new Donation({ ...req.body, receiptNo }).save();
     res.json({ success: true, receiptNo });
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/donations/:email', async (req, res) => {
   try {
     const donations = await Donation.find({ donorEmail: req.params.email }).sort({ date: -1 });
     res.json(donations);
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/donations/madrasa/:upi', async (req, res) => {
   try {
     const donations = await Donation.find({ madrasaUpi: req.params.upi }).sort({ date: -1 });
     res.json(donations);
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/donations/:id/status', async (req, res) => {
   try {
     await Donation.findByIdAndUpdate(req.params.id, { status: req.body.status });
-    res.json({ success: true, message: `Donation marked as ${req.body.status}` });
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---------- CONTACT ----------
 app.post('/api/contact', async (req, res) => {
-  try { 
-    await Contact.create(req.body); 
-    res.json({ success: true }); 
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+  try { await Contact.create(req.body); res.json({ success: true }); } 
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---------- SUBSCRIBE ----------
@@ -384,46 +399,81 @@ app.post('/api/subscribe', async (req, res) => {
     if (existing) return res.json({ message: 'Already subscribed!' });
     await Subscriber.create(req.body);
     res.json({ success: true });
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ---------- ADMIN ROUTES ----------
+// ---------- ADMIN: PENDING (WITH SIGNED URLs) ----------
 app.get('/api/admin/pending', async (req, res) => {
   try { 
-    const pending = await Madrasa.find({ status: 'pending' }); 
-    res.json(pending); 
+    const pending = await Madrasa.find({ status: 'pending' }).select('-password');
+    
+    // Generate signed URLs for admin (valid 24 hours)
+    const pendingWithUrls = await Promise.all(pending.map(async (m) => {
+      const madrasaObj = m.toObject();
+      if (madrasaObj.documents) {
+        for (const docKey of Object.keys(madrasaObj.documents)) {
+          const doc = madrasaObj.documents[docKey];
+          if (doc && doc.public_id) {
+            doc.signed_url = cloudinary.url(doc.public_id, {
+              type: 'authenticated',
+              sign_url: true,
+              secure: true,
+              expires_at: Math.floor(Date.now() / 1000) + 86400
+            });
+          }
+        }
+      }
+      return madrasaObj;
+    }));
+    
+    res.json(pendingWithUrls);
   } catch (err) { 
     res.status(500).json({ error: err.message }); 
   }
 });
 
+// ---------- ADMIN: APPROVE ----------
 app.put('/api/admin/approve/:id', async (req, res) => {
   try { 
     await Madrasa.findByIdAndUpdate(req.params.id, { status: 'active' }); 
-    res.json({ success: true }); 
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+    res.json({ success: true, message: '✅ Approved!' }); 
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ---------- ADMIN: REJECT ----------
 app.put('/api/admin/reject/:id', async (req, res) => {
   try { 
     await Madrasa.findByIdAndUpdate(req.params.id, { status: 'rejected' }); 
-    res.json({ success: true }); 
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+    res.json({ success: true, message: '❌ Rejected.' }); 
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---------- ADMIN: DELETE MADRASA + CLOUDINARY FILES ----------
+app.delete('/api/admin/madrasa/:id', async (req, res) => {
+  try {
+    const madrasa = await Madrasa.findById(req.params.id);
+    if (!madrasa) return res.status(404).json({ error: 'Not found' });
+    
+    // Delete all files from Cloudinary
+    if (madrasa.documents) {
+      for (const docKey of Object.keys(madrasa.documents)) {
+        const doc = madrasa.documents[docKey];
+        if (doc && doc.public_id) {
+          await cloudinary.uploader.destroy(doc.public_id);
+        }
+      }
+    }
+    
+    await Madrasa.findByIdAndDelete(req.params.id);
+    res.json({ success: true, message: 'Madrasa + all documents deleted' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/donations/admin', async (req, res) => {
   try { 
     const donations = await Donation.find().sort({ date: -1 }).limit(50); 
     res.json(donations); 
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---------- STATS ----------
@@ -434,14 +484,8 @@ app.get('/api/stats', async (req, res) => {
     const totalAmount = await Donation.aggregate([
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
-    res.json({ 
-      madrasas, 
-      donations, 
-      totalAmount: totalAmount[0]?.total || 0 
-    });
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+    res.json({ madrasas, donations, totalAmount: totalAmount[0]?.total || 0 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ---------- NEEDS (CRUD) ----------
@@ -449,75 +493,56 @@ app.get('/api/needs/madrasa/:id', async (req, res) => {
   try {
     const needs = await Need.find({ madrasaId: req.params.id }).sort({ createdAt: -1 });
     res.json(needs);
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/needs', async (req, res) => {
-  try {
-    const need = await Need.create(req.body);
-    res.status(201).json(need);
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+  try { const need = await Need.create(req.body); res.status(201).json(need); } 
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/needs/:id', async (req, res) => {
   try {
-    const updatedNeed = await Need.findByIdAndUpdate(
-      req.params.id, req.body, { new: true, runValidators: true }
-    );
-    if (!updatedNeed) return res.status(404).json({ error: 'Need not found' });
-    res.json(updatedNeed);
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+    const updated = await Need.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Not found' });
+    res.json(updated);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.delete('/api/needs/:id', async (req, res) => {
   try {
-    const deletedNeed = await Need.findByIdAndDelete(req.params.id);
-    if (!deletedNeed) return res.status(404).json({ error: 'Need not found' });
-    res.json({ success: true, message: 'Need deleted' });
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+    await Need.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.patch('/api/needs/:id/status', async (req, res) => {
   try {
-    const updatedNeed = await Need.findByIdAndUpdate(
-      req.params.id, { status: req.body.status }, { new: true }
-    );
-    if (!updatedNeed) return res.status(404).json({ error: 'Need not found' });
-    res.json(updatedNeed);
-  } catch (err) { 
-    res.status(500).json({ error: err.message }); 
-  }
+    const updated = await Need.findByIdAndUpdate(req.params.id, { status: req.body.status }, { new: true });
+    if (!updated) return res.status(404).json({ error: 'Not found' });
+    res.json(updated);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ========== DOCUMENT SERVING ROUTE ==========
-app.get('/api/madrasas/:id/document/:docType', async (req, res) => {
+// ========== 🔒 ADMIN DOCUMENT VIEWER (SIGNED URL) ==========
+app.get('/api/admin/document/:madrasaId/:docType', async (req, res) => {
   try {
-    const madrasa = await Madrasa.findById(req.params.id);
+    const madrasa = await Madrasa.findById(req.params.madrasaId);
     if (!madrasa) return res.status(404).json({ error: 'Not found' });
     
-    const docMap = {
-      'aadhaar': madrasa.aadhaarDoc,
-      'pan': madrasa.panDoc,
-      'proof': madrasa.madrasaProof,
-      'trust': madrasa.trustDeed,
-      'passbook': madrasa.passbook,
-      'front': madrasa.frontPhoto,
-      'classroom': madrasa.classroomPhoto
-    };
+    const docKey = req.params.docType;
+    const doc = madrasa.documents ? madrasa.documents[docKey] : null;
+    if (!doc || !doc.public_id) return res.status(404).json({ error: 'Document not found' });
     
-    const doc = docMap[req.params.docType];
-    if (!doc || !doc.data) return res.status(404).json({ error: 'Document not found' });
+    // Generate signed URL (valid 1 hour)
+    const signedUrl = cloudinary.url(doc.public_id, {
+      type: 'authenticated',
+      sign_url: true,
+      secure: true,
+      expires_at: Math.floor(Date.now() / 1000) + 3600
+    });
     
-    res.set('Content-Type', doc.contentType);
-    res.send(doc.data);
+    res.json({ url: signedUrl, secure_url: signedUrl });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
