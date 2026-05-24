@@ -1,15 +1,19 @@
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const bcrypt = require('bcryptjs'); 
-const multer = require('multer');
-const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
-require('dotenv').config();
+import express, { json } from 'express';
+import { connect, Schema, model } from 'mongoose';
+import cors from 'cors';
+import { genSalt, hash, compare } from 'bcryptjs'; 
+import multer from 'multer';
+import { v2 as cloudinary } from 'cloudinary';
+import { CloudinaryStorage } from 'multer-storage-cloudinary';
+import dotenv from 'dotenv';
+dotenv.config();
+
+console.log(`🌎 Environment: ${process.env.NODE_ENV || 'development'}`);
 
 const app = express();
+app.set('trust proxy', 1); // 🔥 Render rate-limiting aur security ke liye zaroori
 app.use(cors());
-app.use(express.json());
+app.use(json());
 
 // ========== CLOUDINARY CONFIG ==========
 cloudinary.config({
@@ -47,13 +51,13 @@ const madrasaUpload = upload.fields([
 ]);
 
 // ========== MONGODB CONNECTION ==========
-mongoose.connect(process.env.MONGO_URI)
+connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ MongoDB Error:', err));
 
 // ========== SCHEMAS ==========
 
-const madrasaSchema = new mongoose.Schema({
+const madrasaSchema = new Schema({
   // Basic Info
   madrasaName: { type: String, required: true },
   board: { type: String, required: true },
@@ -168,14 +172,14 @@ madrasaSchema.pre('findOneAndUpdate', function(next) {
   next();
 });
 
-const donorSchema = new mongoose.Schema({
+const donorSchema = new Schema({
   fullName: { type: String, required: true },
   phone: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   createdAt: { type: Date, default: Date.now }
 });
 
-const donationSchema = new mongoose.Schema({
+const donationSchema = new Schema({
   receiptNo: { type: String, unique: true },
   donorName: { type: String, required: true },
   donorEmail: { type: String, required: true },
@@ -190,19 +194,19 @@ const donationSchema = new mongoose.Schema({
   date: { type: Date, default: Date.now }
 });
 
-const contactSchema = new mongoose.Schema({
+const contactSchema = new Schema({
   name: String, email: String, phone: String,
   subject: String, message: String,
   createdAt: { type: Date, default: Date.now }
 });
 
-const subscriberSchema = new mongoose.Schema({
+const subscriberSchema = new Schema({
   email: { type: String, unique: true },
   subscribedAt: { type: Date, default: Date.now }
 });
 
-const needSchema = new mongoose.Schema({
-  madrasaId: { type: mongoose.Schema.Types.ObjectId, ref: 'Madrasa', required: true },
+const needSchema = new Schema({
+  madrasaId: { type: Schema.Types.ObjectId, ref: 'Madrasa', required: true },
   title: String, category: String, cost: Number,
   urgencyLevel: { type: Number, default: 80 },
   description: String,
@@ -210,24 +214,25 @@ const needSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-const Madrasa = mongoose.model('Madrasa', madrasaSchema);
-const Donor = mongoose.model('Donor', donorSchema);
-const Donation = mongoose.model('Donation', donationSchema);
-const Contact = mongoose.model('Contact', contactSchema);
-const Subscriber = mongoose.model('Subscriber', subscriberSchema);
-const Need = mongoose.model('Need', needSchema);
+const Madrasa = model('Madrasa', madrasaSchema);
+const Donor = model('Donor', donorSchema);
+const Donation = model('Donation', donationSchema);
+const Contact = model('Contact', contactSchema);
+const Subscriber = model('Subscriber', subscriberSchema);
+const Need = model('Need', needSchema);
 
 // ========== API ROUTES ==========
 
 // ---------- MADRASA REGISTRATION (CLOUDINARY) ----------
 app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
   try {
+    // ✅ FIXED: Saare missing variables ko destructure kiya
     const {
       madrasaName, board, category, establishedYear, recognition,
       mohtamim, phone, email,
       streetAddress, city, district, pincode,
       maleStudents, femaleStudents, maleTeachers, femaleTeachers, educationLevel,
-      upi, accountNumber, ifsc, bankName, password
+      upiId, accountNumber, ifsc, bankName, password
     } = req.body;
 
     // Check required files
@@ -242,8 +247,8 @@ app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
     }
 
     // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const salt = await genSalt(10);
+    const hashedPassword = await hash(password, salt);
 
     // Build documents object from Cloudinary response
     const documents = {};
@@ -252,7 +257,7 @@ app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
       documents[field] = {
         url: file.path,
         secure_url: file.secure_url,
-        public_id: file.filename || file.public_id
+        public_id: file.public_id
       };
     });
 
@@ -269,10 +274,13 @@ app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
       maleTeachers: parseInt(maleTeachers) || 0,
       femaleTeachers: parseInt(femaleTeachers) || 0,
       educationLevel,
-      upiId: upi,
-      accountNumber, ifsc: ifsc.toUpperCase(), bankName,
+      upiId: upiId, // ✅ FIXED: Sahi variable map kiya
+      accountNumber, 
+      ifsc: (ifsc?.toUpperCase?.() || ''), 
+      bankName,
       password: hashedPassword,
-      documents: documents
+      documents: documents,
+      status: 'pending' // Always set to pending on registration
     });
 
     await newMadrasa.save();
@@ -296,8 +304,8 @@ app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
 app.post('/api/register/donor', async (req, res) => {
   try {
     const { fullName, phone, password } = req.body;
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
+    const salt = await genSalt(10);
+    const hashedPassword = await hash(password, salt);
     await new Donor({ fullName, phone, password: hashedPassword }).save();
     res.json({ success: true, message: 'Account created! Please login.' });
   } catch (err) {
@@ -317,7 +325,7 @@ app.post('/api/login', async (req, res) => {
       role = 'madrasa'; 
     }
     if (!user) return res.status(400).json({ success: false, error: 'Account not found.' });
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await compare(password, user.password);
     if (!isMatch) return res.status(400).json({ success: false, error: 'Wrong password!' });
     res.json({ success: true, role, name: user.madrasaName || user.fullName, userId: user._id, phone: user.phone });
   } catch(err) { res.status(500).json({ success: false, error: err.message }); }
@@ -481,10 +489,13 @@ app.get('/api/stats', async (req, res) => {
   try {
     const madrasas = await Madrasa.countDocuments({ status: 'active' });
     const donations = await Donation.countDocuments();
-    const totalAmount = await Donation.aggregate([
+    const totalAmountResult = await Donation.aggregate([
       { $group: { _id: null, total: { $sum: '$amount' } } }
     ]);
-    res.json({ madrasas, donations, totalAmount: totalAmount[0]?.total || 0 });
+    const totalAmount = (Array.isArray(totalAmountResult) && totalAmountResult.length > 0)
+      ? totalAmountResult[0].total
+      : 0;
+    res.json({ madrasas, donations, totalAmount });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
