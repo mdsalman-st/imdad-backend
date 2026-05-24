@@ -51,10 +51,10 @@ const madrasaUpload = upload.fields([
 ]);
 
 // ========== MONGODB CONNECTION ==========
-connect(process.env.MONGO_URI || 'mongodb+srv://imdad-app:mdsalman2007@cluster0.2tiwguu.mongodb.net/imdad-app?retryWrites=true&w=majority')
+connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ MongoDB Error:', err));
-
+  
 // ========== SCHEMAS ==========
 const madrasaSchema = new Schema({
   madrasaName: { type: String, required: true },
