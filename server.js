@@ -14,7 +14,11 @@ console.log(`🌎 Environment: ${process.env.NODE_ENV || 'development'}`);
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(json());
 
 // ========== CLOUDINARY CONFIG ==========
@@ -54,7 +58,7 @@ const madrasaUpload = upload.fields([
 connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.log('❌ MongoDB Error:', err));
-  
+
 // ========== SCHEMAS ==========
 const madrasaSchema = new Schema({
   madrasaName: { type: String, required: true },
@@ -158,7 +162,7 @@ const Need = model('Need', needSchema);
 
 // ========== API ROUTES ==========
 
-// Madrasa Registration
+// Login
 app.post('/api/login', async (req, res) => {
   try {
     const { phone, password } = req.body;
@@ -184,7 +188,6 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Wrong password!' });
     }
 
-    // Madrasa status check
     if (role === 'madrasa' && user.status === 'pending') {
       return res.status(403).json({ success: false, error: 'Your account is pending verification.' });
     }
@@ -214,6 +217,7 @@ app.post('/api/login', async (req, res) => {
     res.status(500).json({ success: false, error: 'Server error. Please try again.' });
   }
 });
+
 // Donor Registration
 app.post('/api/register/donor', async (req, res) => {
   try {
@@ -228,18 +232,56 @@ app.post('/api/register/donor', async (req, res) => {
   }
 });
 
-// Login
-app.post('/api/login', async (req, res) => {
+// Madrasa Registration
+app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
   try {
-    const { phone, password } = req.body;
-    let user = await Donor.findOne({ phone });
-    let role = 'donor';
-    if (!user) { user = await Madrasa.findOne({ phone }); role = 'madrasa'; }
-    if (!user) return res.status(400).json({ success: false, error: 'Account not found.' });
-    const isMatch = await compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ success: false, error: 'Wrong password!' });
-    res.json({ success: true, role, name: user.madrasaName || user.fullName, userId: user._id, phone: user.phone });
-  } catch(err) { res.status(500).json({ success: false, error: err.message }); }
+    const {
+      madrasaName, board, category, establishedYear, recognition,
+      mohtamim, phone, email,
+      streetAddress, city, district, pincode,
+      maleStudents, femaleStudents, maleTeachers, femaleTeachers, educationLevel,
+      upiId, accountNumber, ifsc, bankName, password
+    } = req.body;
+
+    const requiredFiles = ['aadhaarDoc', 'panDoc', 'madrasaProof', 'trustDeed', 'passbook', 'frontPhoto', 'classroomPhoto'];
+    const missingFiles = requiredFiles.filter(f => !req.files || !req.files[f]);
+    
+    if (missingFiles.length > 0) {
+      return res.status(400).json({ success: false, error: `Missing documents: ${missingFiles.join(', ')}` });
+    }
+
+    const salt = await genSalt(10);
+    const hashedPassword = await hash(password, salt);
+
+    const documents = {};
+    requiredFiles.forEach(field => {
+      const file = req.files[field][0];
+      documents[field] = { url: file.path, secure_url: file.path, public_id: file.filename };
+    });
+
+    const newMadrasa = new Madrasa({
+      madrasaName, board, category,
+      establishedYear: parseInt(establishedYear), recognition,
+      mohtamim, phone, email: email || '',
+      streetAddress, city, district, state: req.body.state || '', pincode,
+      maleStudents: parseInt(maleStudents) || 0,
+      femaleStudents: parseInt(femaleStudents) || 0,
+      maleTeachers: parseInt(maleTeachers) || 0,
+      femaleTeachers: parseInt(femaleTeachers) || 0,
+      educationLevel, upiId, accountNumber,
+      ifsc: (ifsc?.toUpperCase?.() || ''), bankName,
+      password: hashedPassword,
+      documents: documents,
+      status: 'pending'
+    });
+
+    await newMadrasa.save();
+    res.json({ success: true, message: '✅ Registration submitted! Pending verification.', madrasaId: newMadrasa._id });
+  } catch (err) {
+    if (err.code === 11000) return res.status(400).json({ success: false, error: 'Phone number already registered!' });
+    console.error('Registration error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // Public Routes
@@ -279,16 +321,24 @@ app.post('/api/donations', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/donations/:email', async (req, res) => {
-  try {
-    const donations = await Donation.find({ donorEmail: req.params.email }).sort({ date: -1 });
-    res.json(donations);
+// IMPORTANT: specific routes pehle, dynamic /:email sabse neeche
+app.get('/api/donations/admin', async (req, res) => {
+  try { 
+    const donations = await Donation.find().sort({ date: -1 }).limit(50); 
+    res.json(donations); 
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/donations/madrasa/:upi', async (req, res) => {
   try {
     const donations = await Donation.find({ madrasaUpi: req.params.upi }).sort({ date: -1 });
+    res.json(donations);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/donations/:email', async (req, res) => {
+  try {
+    const donations = await Donation.find({ donorEmail: req.params.email }).sort({ date: -1 });
     res.json(donations);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -363,11 +413,6 @@ app.delete('/api/admin/madrasa/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/donations/admin', async (req, res) => {
-  try { const donations = await Donation.find().sort({ date: -1 }).limit(50); res.json(donations); } 
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 app.get('/api/admin/document/:madrasaId/:docType', async (req, res) => {
   try {
     const madrasa = await Madrasa.findById(req.params.madrasaId);
@@ -423,5 +468,4 @@ app.delete('/api/needs/:id', async (req, res) => {
 
 // ========== START SERVER ==========
 const PORT = process.env.PORT || 5000;
-// Isme badlo:
-app.listen(5001, () => console.log(`🚀 Server running on port 5001`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
