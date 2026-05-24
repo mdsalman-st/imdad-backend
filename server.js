@@ -232,6 +232,22 @@ app.post('/api/register/donor', async (req, res) => {
   }
 });
 
+// Donor Update
+app.put('/api/donors/:id', async (req, res) => {
+  try {
+    const updateData = { ...req.body };
+    if (updateData.password) {
+      const salt = await genSalt(10);
+      updateData.password = await hash(updateData.password, salt);
+    }
+    const donor = await Donor.findByIdAndUpdate(req.params.id, updateData, { new: true }).select('-password');
+    if (!donor) return res.status(404).json({ error: 'Donor not found' });
+    res.json(donor);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Madrasa Registration
 app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
   try {
@@ -298,6 +314,22 @@ app.get('/api/madrasas/:id', async (req, res) => {
     if (!madrasa) return res.status(404).json({ error: 'Not found' });
     res.json(madrasa);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Change Password (donor aur madrasa dono ke liye)
+app.put('/api/change-password', async (req, res) => {
+  try {
+    const { phone, newPassword } = req.body;
+    if (!phone || !newPassword) return res.status(400).json({ error: 'Phone and new password required.' });
+    const salt = await genSalt(10);
+    const hashed = await hash(newPassword, salt);
+    let updated = await Donor.findOneAndUpdate({ phone }, { password: hashed });
+    if (!updated) updated = await Madrasa.findOneAndUpdate({ phone }, { password: hashed });
+    if (!updated) return res.status(404).json({ error: 'Account not found.' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Update Madrasa
