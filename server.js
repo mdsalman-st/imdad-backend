@@ -35,6 +35,8 @@ const storage = new CloudinaryStorage({
     return {
       folder: 'imdad_madaris',
       resource_type: isPdf ? 'raw' : 'image',
+      // 'upload' type — public access, no signed URL needed
+      type: 'upload',
       allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'],
       transformation: isPdf ? [] : [{ width: 1000, height: 1000, crop: 'limit', quality: 'auto' }],
     };
@@ -412,22 +414,8 @@ app.post('/api/subscribe', async (req, res) => {
 app.get('/api/admin/pending', async (req, res) => {
   try { 
     const pending = await Madrasa.find({ status: 'pending' }).select('-password');
-    const pendingWithUrls = await Promise.all(pending.map(async (m) => {
-      const madrasaObj = m.toObject();
-      if (madrasaObj.documents) {
-        for (const docKey of Object.keys(madrasaObj.documents)) {
-          const doc = madrasaObj.documents[docKey];
-          if (doc && doc.public_id) {
-            doc.signed_url = cloudinary.url(doc.public_id, {
-              type: 'authenticated', sign_url: true, secure: true,
-              expires_at: Math.floor(Date.now() / 1000) + 86400
-            });
-          }
-        }
-      }
-      return madrasaObj;
-    }));
-    res.json(pendingWithUrls);
+    // Simple URL — no signed URL needed for 'upload' type
+    res.json(pending.map(m => m.toObject()));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -461,12 +449,8 @@ app.get('/api/admin/document/:madrasaId/:docType', async (req, res) => {
     const madrasa = await Madrasa.findById(req.params.madrasaId);
     if (!madrasa) return res.status(404).json({ error: 'Not found' });
     const doc = madrasa.documents?.[req.params.docType];
-    if (!doc?.public_id) return res.status(404).json({ error: 'Document not found' });
-    const signedUrl = cloudinary.url(doc.public_id, {
-      type: 'authenticated', sign_url: true, secure: true,
-      expires_at: Math.floor(Date.now() / 1000) + 3600
-    });
-    res.json({ url: signedUrl });
+    if (!doc?.url) return res.status(404).json({ error: 'Document not found' });
+    res.json({ url: doc.url });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
