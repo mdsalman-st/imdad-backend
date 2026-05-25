@@ -30,12 +30,14 @@ cloudinary.config({
 
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
-  params: {
-    folder: 'imdad_madaris',
-    allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'],
-    transformation: [{ width: 1000, height: 1000, crop: 'limit', quality: 'auto' }],
-    type: 'authenticated',
-    sign_url: true,
+  params: async (req, file) => {
+    const isPdf = file.mimetype === 'application/pdf';
+    return {
+      folder: 'imdad_madaris',
+      resource_type: isPdf ? 'raw' : 'image',
+      allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'],
+      transformation: isPdf ? [] : [{ width: 1000, height: 1000, crop: 'limit', quality: 'auto' }],
+    };
   }
 });
 
@@ -249,7 +251,15 @@ app.put('/api/donors/:id', async (req, res) => {
 });
 
 // Madrasa Registration
-app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
+app.post('/api/register/madrasa', (req, res, next) => {
+  madrasaUpload(req, res, (err) => {
+    if (err) {
+      console.error('Multer/Cloudinary error:', err.message, err.stack);
+      return res.status(500).json({ success: false, error: 'File upload failed: ' + (err.message || 'Unknown error') });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     const {
       madrasaName, board, category, establishedYear, recognition,
@@ -295,8 +305,9 @@ app.post('/api/register/madrasa', madrasaUpload, async (req, res) => {
     res.json({ success: true, message: '✅ Registration submitted! Pending verification.', madrasaId: newMadrasa._id });
   } catch (err) {
     if (err.code === 11000) return res.status(400).json({ success: false, error: 'Phone number already registered!' });
-    console.error('Registration error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error('Registration error message:', err.message);
+    console.error('Registration error stack:', err.stack);
+    res.status(500).json({ success: false, error: err.message || 'Registration failed' });
   }
 });
 
