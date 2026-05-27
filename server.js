@@ -7,8 +7,18 @@ import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
 import { CloudinaryStorage } from 'multer-storage-cloudinary';
 import dotenv from 'dotenv';
+import { appendFileSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
+
+const __dbgRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+function dbgLog(location, message, data, hypothesisId) {
+  try {
+    appendFileSync(join(__dbgRoot, 'debug-fbaa6e.log'), JSON.stringify({ sessionId: 'fbaa6e', location, message, data: data || {}, hypothesisId, timestamp: Date.now(), runId: 'pre-fix' }) + '\n');
+  } catch (_) {}
+}
 
 console.log(`🌎 Environment: ${process.env.NODE_ENV || 'development'}`);
 
@@ -596,4 +606,9 @@ app.delete('/api/needs/:id', async (req, res) => {
 
 // ========== START SERVER ==========
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  // #region agent log
+  dbgLog('server.js:listen', 'Backend started', { port: PORT, hasMongo: !!process.env.MONGO_URI, hasJwt: !!process.env.JWT_SECRET }, 'E');
+  // #endregion
+});
