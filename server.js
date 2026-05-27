@@ -1,5 +1,5 @@
 import express, { json } from 'express';
-import { connect, Schema, model } from 'mongoose';
+import { connect, Schema, model, Types } from 'mongoose';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import { genSalt, hash, compare } from 'bcryptjs'; 
@@ -124,6 +124,7 @@ const donorSchema = new Schema({
 
 const donationSchema = new Schema({
   receiptNo: { type: String, unique: true },
+  donorId: { type: Schema.Types.ObjectId, ref: 'Donor', default: null, index: true },
   donorName: { type: String, required: true },
   donorEmail: { type: String, required: true },
   donorPhone: String,
@@ -163,6 +164,25 @@ const Donation = model('Donation', donationSchema);
 const Contact = model('Contact', contactSchema);
 const Subscriber = model('Subscriber', subscriberSchema);
 const Need = model('Need', needSchema);
+
+function getDonorIdFromRequest(req) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  if (!token || !process.env.JWT_SECRET) return null;
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (decoded?.role !== 'donor' || !Types.ObjectId.isValid(decoded.userId)) return null;
+    return decoded.userId;
+  } catch (err) {
+    return null;
+  }
+}
+
+function isValidObjectId(id) {
+  return Types.ObjectId.isValid(id);
+}
 
 // ========== API ROUTES ==========
 
@@ -239,6 +259,7 @@ app.post('/api/register/donor', async (req, res) => {
 // Donor Update
 app.put('/api/donors/:id', async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid donor id' });
     const updateData = { ...req.body };
     if (updateData.password) {
       const salt = await genSalt(10);
@@ -323,6 +344,7 @@ app.get('/api/madrasas', async (req, res) => {
 
 app.get('/api/madrasas/:id', async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Not found' });
     const madrasa = await Madrasa.findById(req.params.id).select('-password -documents');
     if (!madrasa) return res.status(404).json({ error: 'Not found' });
     res.json(madrasa);
@@ -348,6 +370,7 @@ app.put('/api/change-password', async (req, res) => {
 // Update Madrasa
 app.put('/api/madrasas/:id', async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid madrasa id' });
     const updateData = { ...req.body };
     delete updateData.password;
     delete updateData.documents;
@@ -361,7 +384,8 @@ app.put('/api/madrasas/:id', async (req, res) => {
 app.post('/api/donations', async (req, res) => {
   try {
     const receiptNo = 'IMD-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
-    await new Donation({ ...req.body, receiptNo }).save();
+    const donorId = getDonorIdFromRequest(req);
+    await new Donation({ ...req.body, receiptNo, donorId }).save();
     res.json({ success: true, receiptNo });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -371,6 +395,28 @@ app.get('/api/donations/admin', async (req, res) => {
   try { 
     const donations = await Donation.find().sort({ date: -1 }).limit(50); 
     res.json(donations); 
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/donations/donor/:donorId', async (req, res) => {
+  try {
+    if (!isValidObjectId(req.params.donorId)) {
+      return res.json({ donations: [], totalAmount: 0 });
+    }
+
+    const query = { donorId: req.params.donorId };
+    const year = Number(req.query.year);
+
+    if (Number.isInteger(year) && year >= 1900 && year <= 3000) {
+      query.date = {
+        $gte: new Date(Date.UTC(year, 0, 1)),
+        $lt: new Date(Date.UTC(year + 1, 0, 1))
+      };
+    }
+
+    const donations = await Donation.find(query).sort({ date: -1 });
+    const totalAmount = donations.reduce((sum, donation) => sum + (donation.amount || 0), 0);
+    res.json({ donations, totalAmount });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -390,6 +436,7 @@ app.get('/api/donations/:email', async (req, res) => {
 
 app.put('/api/donations/:id/status', async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid donation id' });
     await Donation.findByIdAndUpdate(req.params.id, { status: req.body.status });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -420,23 +467,38 @@ app.get('/api/admin/pending', async (req, res) => {
 });
 
 app.put('/api/admin/approve/:id', async (req, res) => {
-  try { await Madrasa.findByIdAndUpdate(req.params.id, { status: 'active' }); res.json({ success: true }); } 
+  try {
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid madrasa id' });
+    await Madrasa.findByIdAndUpdate(req.params.id, { status: 'active' });
+    res.json({ success: true });
+  } 
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/admin/reject/:id', async (req, res) => {
-  try { await Madrasa.findByIdAndUpdate(req.params.id, { status: 'rejected' }); res.json({ success: true }); } 
+  try {
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid madrasa id' });
+    await Madrasa.findByIdAndUpdate(req.params.id, { status: 'rejected' });
+    res.json({ success: true });
+  } 
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.delete('/api/admin/madrasa/:id', async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid madrasa id' });
     const madrasa = await Madrasa.findById(req.params.id);
     if (!madrasa) return res.status(404).json({ error: 'Not found' });
     if (madrasa.documents) {
       for (const docKey of Object.keys(madrasa.documents)) {
         const doc = madrasa.documents[docKey];
-        if (doc && doc.public_id) await cloudinary.uploader.destroy(doc.public_id);
+        if (doc && doc.public_id) {
+          try {
+            await cloudinary.uploader.destroy(doc.public_id);
+          } catch (destroyErr) {
+            console.warn(`Cloudinary destroy failed for ${docKey}:`, destroyErr.message);
+          }
+        }
       }
     }
     await Madrasa.findByIdAndDelete(req.params.id);
@@ -446,6 +508,7 @@ app.delete('/api/admin/madrasa/:id', async (req, res) => {
 
 app.get('/api/admin/document/:madrasaId/:docType', async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.madrasaId)) return res.status(400).json({ error: 'Invalid madrasa id' });
     const madrasa = await Madrasa.findById(req.params.madrasaId);
     if (!madrasa) return res.status(404).json({ error: 'Not found' });
     const doc = madrasa.documents?.[req.params.docType];
@@ -470,18 +533,24 @@ app.get('/api/stats', async (req, res) => {
 // Needs
 app.get('/api/needs/madrasa/:id', async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.id)) return res.json([]);
     const needs = await Need.find({ madrasaId: req.params.id }).sort({ createdAt: -1 });
     res.json(needs);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/needs', async (req, res) => {
-  try { const need = await Need.create(req.body); res.status(201).json(need); } 
+  try {
+    if (!isValidObjectId(req.body?.madrasaId)) return res.status(400).json({ error: 'Invalid madrasa id' });
+    const need = await Need.create(req.body);
+    res.status(201).json(need);
+  } 
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.put('/api/needs/:id', async (req, res) => {
   try {
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid need id' });
     const updated = await Need.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!updated) return res.status(404).json({ error: 'Not found' });
     res.json(updated);
@@ -489,7 +558,11 @@ app.put('/api/needs/:id', async (req, res) => {
 });
 
 app.delete('/api/needs/:id', async (req, res) => {
-  try { await Need.findByIdAndDelete(req.params.id); res.json({ success: true }); } 
+  try {
+    if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid need id' });
+    await Need.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } 
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
