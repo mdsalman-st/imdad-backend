@@ -35,7 +35,6 @@ const storage = new CloudinaryStorage({
     return {
       folder: 'imdad_madaris',
       resource_type: isPdf ? 'raw' : 'image',
-      // 'upload' type — public access, no signed URL needed
       type: 'upload',
       allowed_formats: ['jpg', 'jpeg', 'png', 'pdf'],
       transformation: isPdf ? [] : [{ width: 1000, height: 1000, crop: 'limit', quality: 'auto' }],
@@ -457,11 +456,10 @@ app.post('/api/subscribe', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Admin Routes
+// ==================== ADMIN ROUTES ====================
 app.get('/api/admin/pending', async (req, res) => {
   try { 
     const pending = await Madrasa.find({ status: 'pending' }).select('-password');
-    // Simple URL — no signed URL needed for 'upload' type
     res.json(pending.map(m => m.toObject()));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -515,6 +513,16 @@ app.get('/api/admin/document/:madrasaId/:docType', async (req, res) => {
     if (!doc?.url) return res.status(404).json({ error: 'Document not found' });
     res.json({ url: doc.url });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ✅ NEW ROUTE: Get all contact messages (Admin)
+app.get('/api/admin/contacts', async (req, res) => {
+  try {
+    const contacts = await Contact.find().sort({ createdAt: -1 });
+    res.json(contacts);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Stats
