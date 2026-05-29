@@ -7,6 +7,8 @@ import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
 import { CloudinaryStorage } from 'multer-storage-cloudinary';
 import dotenv from 'dotenv';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { appendFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -30,6 +32,17 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(json());
+
+app.use(helmet());
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: { error: 'Too many requests, please try again later.' }
+});
+app.use('/api/login', limiter);
+app.use('/api/register/', limiter);
+app.use('/api/change-password', limiter);
+app.use('/api/admin/login', limiter);
 
 // ========== CLOUDINARY CONFIG ==========
 cloudinary.config({
@@ -202,12 +215,34 @@ function isValidObjectId(id) {
   return Types.ObjectId.isValid(id);
 }
 
+function isAuthenticated(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) { res.status(401).json({ error: 'Invalid token' }); }
+}
+
+function isAdmin(req, res, next) {
+  isAuthenticated(req, res, () => {
+    if (req.user && req.user.role === 'admin') {
+      next();
+    } else {
+      res.status(403).json({ error: 'Forbidden' });
+    }
+  });
+}
+
 // ========== API ROUTES ==========
 
 // Login
 app.post('/api/login', async (req, res) => {
   try {
-    const { phone, password } = req.body;
+    const phone = String(req.body.phone || '');
+    const password = String(req.body.password || '');
     if (!phone || !password) {
       return res.status(400).json({ success: false, error: 'Phone and password required.' });
     }
@@ -254,7 +289,9 @@ app.post('/api/login', async (req, res) => {
 // Donor Registration
 app.post('/api/register/donor', async (req, res) => {
   try {
-    const { fullName, phone, password } = req.body;
+    const fullName = String(req.body.fullName || '');
+    const phone = String(req.body.phone || '');
+    const password = String(req.body.password || '');
     const salt = await genSalt(10);
     const hashedPassword = await hash(password, salt);
     await new Donor({ fullName, phone, password: hashedPassword }).save();
@@ -266,9 +303,10 @@ app.post('/api/register/donor', async (req, res) => {
 });
 
 // Donor Update
-app.put('/api/donors/:id', async (req, res) => {
+app.put('/api/donors/:id', isAuthenticated, async (req, res) => {
   try {
     if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid donor id' });
+    if (req.user.userId !== req.params.id && req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
     const updateData = { ...req.body };
     if (updateData.password) {
       const salt = await genSalt(10);
@@ -355,21 +393,34 @@ app.get('/api/madrasas/:id', async (req, res) => {
 // Change Password
 app.put('/api/change-password', async (req, res) => {
   try {
-    const { phone, newPassword } = req.body;
-    if (!phone || !newPassword) return res.status(400).json({ error: 'Phone and new password required.' });
+    const phone = String(req.body.phone || '');
+    const oldPassword = String(req.body.oldPassword || '');
+    const newPassword = String(req.body.newPassword || '');
+    if (!phone || !oldPassword || !newPassword) return res.status(400).json({ error: 'Phone, old password, and new password required.' });
+    
+    let user = await Donor.findOne({ phone });
+    if (!user) user = await Madrasa.findOne({ phone });
+    if (!user) return res.status(404).json({ error: 'Account not found.' });
+
+    const isMatch = await compare(oldPassword, user.password);
+    if (!isMatch) return res.status(400).json({ error: 'Wrong current password!' });
+
     const salt = await genSalt(10);
     const hashed = await hash(newPassword, salt);
-    let updated = await Donor.findOneAndUpdate({ phone }, { password: hashed });
-    if (!updated) updated = await Madrasa.findOneAndUpdate({ phone }, { password: hashed });
-    if (!updated) return res.status(404).json({ error: 'Account not found.' });
+    if (user.madrasaName) {
+      await Madrasa.findByIdAndUpdate(user._id, { password: hashed });
+    } else {
+      await Donor.findByIdAndUpdate(user._id, { password: hashed });
+    }
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Update Madrasa
-app.put('/api/madrasas/:id', async (req, res) => {
+app.put('/api/madrasas/:id', isAuthenticated, async (req, res) => {
   try {
     if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid madrasa id' });
+    if (req.user.userId !== req.params.id && req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
     const updateData = { ...req.body };
     delete updateData.password;
     delete updateData.documents;
@@ -389,7 +440,7 @@ app.post('/api/donations', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/donations/admin', async (req, res) => {
+app.get('/api/donations/admin', isAdmin, async (req, res) => {
   try { 
     const donations = await Donation.find().sort({ date: -1 }).limit(50); 
     res.json(donations); 
@@ -453,14 +504,26 @@ app.post('/api/subscribe', async (req, res) => {
 });
 
 // ==================== ADMIN ROUTES ====================
-app.get('/api/admin/pending', async (req, res) => {
+app.post('/api/admin/login', (req, res) => {
+  const { username, password } = req.body;
+  const adminUser = process.env.ADMIN_USERNAME || 'admin';
+  const adminPass = process.env.ADMIN_PASSWORD || 'salman100';
+  if (username === adminUser && password === adminPass) {
+    const token = jwt.sign({ role: 'admin' }, process.env.JWT_SECRET || 'secret', { expiresIn: '1d' });
+    res.json({ success: true, token });
+  } else {
+    res.status(401).json({ success: false, error: 'Invalid admin credentials' });
+  }
+});
+
+app.get('/api/admin/pending', isAdmin, async (req, res) => {
   try { 
     const pending = await Madrasa.find({ status: 'pending' }).select('-password');
     res.json(pending.map(m => m.toObject()));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/admin/approve/:id', async (req, res) => {
+app.put('/api/admin/approve/:id', isAdmin, async (req, res) => {
   try {
     if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid madrasa id' });
     await Madrasa.findByIdAndUpdate(req.params.id, { status: 'active' });
@@ -468,7 +531,7 @@ app.put('/api/admin/approve/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/admin/reject/:id', async (req, res) => {
+app.put('/api/admin/reject/:id', isAdmin, async (req, res) => {
   try {
     if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid madrasa id' });
     await Madrasa.findByIdAndUpdate(req.params.id, { status: 'rejected' });
@@ -476,7 +539,7 @@ app.put('/api/admin/reject/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/api/admin/madrasa/:id', async (req, res) => {
+app.delete('/api/admin/madrasa/:id', isAdmin, async (req, res) => {
   try {
     if (!isValidObjectId(req.params.id)) return res.status(400).json({ error: 'Invalid madrasa id' });
     const madrasa = await Madrasa.findById(req.params.id);
@@ -494,7 +557,7 @@ app.delete('/api/admin/madrasa/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/admin/document/:madrasaId/:docType', async (req, res) => {
+app.get('/api/admin/document/:madrasaId/:docType', isAdmin, async (req, res) => {
   try {
     if (!isValidObjectId(req.params.madrasaId)) return res.status(400).json({ error: 'Invalid madrasa id' });
     const madrasa = await Madrasa.findById(req.params.madrasaId);
@@ -506,7 +569,7 @@ app.get('/api/admin/document/:madrasaId/:docType', async (req, res) => {
 });
 
 // ✅ ADMIN: Get all contact messages
-app.get('/api/admin/contacts', async (req, res) => {
+app.get('/api/admin/contacts', isAdmin, async (req, res) => {
   try {
     const contacts = await Contact.find().sort({ createdAt: -1 });
     res.json(contacts);
@@ -514,7 +577,7 @@ app.get('/api/admin/contacts', async (req, res) => {
 });
 
 // ✅ ADMIN: Get all questions
-app.get('/api/admin/askmufti', async (req, res) => {
+app.get('/api/admin/askmufti', isAdmin, async (req, res) => {
   try {
     const questions = await Question.find().sort({ createdAt: -1 });
     res.json(questions);
@@ -522,7 +585,7 @@ app.get('/api/admin/askmufti', async (req, res) => {
 });
 
 // ✅ ADMIN: Answer a question
-app.put('/api/admin/askmufti/:id', async (req, res) => {
+app.put('/api/admin/askmufti/:id', isAdmin, async (req, res) => {
   try {
     const { answer } = req.body;
     if (!answer) return res.status(400).json({ error: 'Answer is required' });
