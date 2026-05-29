@@ -506,8 +506,8 @@ app.post('/api/subscribe', async (req, res) => {
 // ==================== ADMIN ROUTES ====================
 app.post('/api/admin/login', (req, res) => {
   const { username, password } = req.body;
-  const adminUser = process.env.ADMIN_USERNAME || 'admin';
-  const adminPass = process.env.ADMIN_PASSWORD || 'salman100';
+  const adminUser = (process.env.ADMIN_USERNAME || 'admin').trim();
+  const adminPass = (process.env.ADMIN_PASSWORD || 'salman100').trim();
   if (username === adminUser && password === adminPass) {
     const token = jwt.sign({ role: 'admin' }, process.env.JWT_SECRET || 'secret', { expiresIn: '1d' });
     res.json({ success: true, token });
