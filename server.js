@@ -137,6 +137,20 @@ madrasaSchema.pre('save', function(next) {
   next();
 });
 
+const bookSchema = new Schema({
+  title: { type: String, required: true },
+  author: { type: String, default: 'Unknown' },
+  categoryKey: { type: String, required: true }, // e.g., 'arabic', 'quran'
+  categoryTitle: { type: String, required: true },
+  categoryIcon: { type: String, default: '📚' },
+  fileUrl: { type: String, required: true },
+  filePublicId: { type: String, default: '' },
+  downloads: { type: Number, default: 0 },
+  uploadedBy: { type: String, default: 'Admin' },
+  uploaderName: { type: String, default: 'Imdad ul Madaris' },
+  createdAt: { type: Date, default: Date.now }
+});
+
 const donorSchema = new Schema({
   fullName: { type: String, required: true },
   phone: { type: String, required: true, unique: true },
@@ -199,6 +213,7 @@ const Contact = model('Contact', contactSchema);
 const Subscriber = model('Subscriber', subscriberSchema);
 const Need = model('Need', needSchema);
 const Question = model('Question', questionSchema);
+const Book = model('Book', bookSchema);
 
 function getDonorIdFromRequest(req) {
   const authHeader = req.headers.authorization || '';
@@ -617,6 +632,124 @@ app.get('/api/askmufti', async (req, res) => {
     if (!email) return res.status(400).json({ error: 'Email required' });
     const questions = await Question.find({ email }).sort({ createdAt: -1 });
     res.json(questions);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ==================== BOOKS API ====================
+app.get('/api/books', async (req, res) => {
+  try {
+    const books = await Book.find().sort({ createdAt: -1 });
+    
+    // Group by categoryKey to match frontend expectation:
+    // { arabic: { title: 'Arabic', icon: '📖', books: [...] }, quran: {...} }
+    const grouped = {};
+    for (const b of books) {
+      if (!grouped[b.categoryKey]) {
+        grouped[b.categoryKey] = {
+          title: b.categoryTitle,
+          icon: b.categoryIcon,
+          books: []
+        };
+      }
+      grouped[b.categoryKey].books.push(b);
+    }
+    res.json(grouped);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/books', isAdmin, upload.single('bookPdf'), async (req, res) => {
+  try {
+    const { title, author, categoryKey, categoryTitle, categoryIcon } = req.body;
+    let fileUrl = req.body.fileUrl; // Fallback if no file uploaded but URL provided
+    let filePublicId = '';
+    
+    if (req.file) {
+      if (req.file.size > 10 * 1024 * 1024) return res.status(400).json({ error: 'File size exceeds 10MB limit' });
+      fileUrl = req.file.path;
+      filePublicId = req.file.filename;
+    }
+    
+    if (!fileUrl || !title || !categoryKey || !categoryTitle) {
+      return res.status(400).json({ error: 'Missing required fields or file' });
+    }
+    
+    const newBook = await Book.create({
+      title, author, categoryKey, categoryTitle, categoryIcon, fileUrl, filePublicId,
+      uploadedBy: 'Admin', uploaderName: 'Imdad ul Madaris Admin'
+    });
+    res.status(201).json({ success: true, book: newBook });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Madrasa Books Endpoints
+app.get('/api/madrasa/books', isAuthenticated, async (req, res) => {
+  try {
+    if (req.user.role !== 'madrasa') return res.status(403).json({ error: 'Forbidden' });
+    const books = await Book.find({ uploadedBy: req.user.userId }).sort({ createdAt: -1 });
+    res.json(books);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/madrasa/books', isAuthenticated, upload.single('bookPdf'), async (req, res) => {
+  try {
+    if (req.user.role !== 'madrasa') return res.status(403).json({ error: 'Forbidden' });
+    
+    const { title, author, categoryKey, categoryTitle, categoryIcon } = req.body;
+    let fileUrl = req.body.fileUrl;
+    let filePublicId = '';
+    
+    if (req.file) {
+      if (req.file.size > 10 * 1024 * 1024) return res.status(400).json({ error: 'File size exceeds 10MB limit' });
+      fileUrl = req.file.path;
+      filePublicId = req.file.filename;
+    }
+    
+    if (!fileUrl || !title || !categoryKey || !categoryTitle) {
+      return res.status(400).json({ error: 'Missing required fields or file' });
+    }
+    
+    const newBook = await Book.create({
+      title, author, categoryKey, categoryTitle, categoryIcon, fileUrl, filePublicId,
+      uploadedBy: req.user.userId,
+      uploaderName: req.user.name
+    });
+    res.status(201).json({ success: true, book: newBook });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/madrasa/books/:id', isAuthenticated, async (req, res) => {
+  try {
+    if (req.user.role !== 'madrasa') return res.status(403).json({ error: 'Forbidden' });
+    const book = await Book.findOne({ _id: req.params.id, uploadedBy: req.user.userId });
+    if (!book) return res.status(404).json({ error: 'Not found or unauthorized' });
+    
+    if (book.filePublicId) {
+      try { await cloudinary.uploader.destroy(book.filePublicId); } catch (e) {}
+    }
+    await Book.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/admin/books/:id', isAdmin, async (req, res) => {
+  try {
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ error: 'Not found' });
+    
+    // Delete from Cloudinary if exists
+    if (book.filePublicId) {
+      try { await cloudinary.uploader.destroy(book.filePublicId); } catch (e) { console.error('Cloudinary delete error', e); }
+    }
+    
+    await Book.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/books/:id/download', async (req, res) => {
+  try {
+    await Book.findByIdAndUpdate(req.params.id, { $inc: { downloads: 1 } });
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
