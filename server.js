@@ -633,6 +633,19 @@ app.get('/api/stats', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.get('/api/leaderboard', async (req, res) => {
+  try {
+    const topDonors = await Donation.aggregate([
+      { $match: { status: { $ne: 'Rejected' } } },
+      { $group: { _id: '$donorName', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+      { $sort: { total: -1 } },
+      { $limit: 100 },
+      { $project: { _id: 0, donor: '$_id', total: 1, count: 1 } }
+    ]);
+    res.json(topDonors);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // Needs
 app.get('/api/needs/madrasa/:id', async (req, res) => {
   try {
