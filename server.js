@@ -15,6 +15,8 @@ import { fileURLToPath } from 'url';
 
 dotenv.config();
 
+const PEPPER = process.env.PEPPER_SECRET || 'fallback_secret_pepper_imdad';
+
 const __dbgRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 function dbgLog(location, message, data, hypothesisId) {
   try {
@@ -271,7 +273,7 @@ app.post('/api/login', async (req, res) => {
     if (!user) {
       return res.status(400).json({ success: false, error: 'Account not found.' });
     }
-    const isMatch = await compare(password, user.password);
+    const isMatch = await compare(password + PEPPER, user.password);
     if (!isMatch) {
       return res.status(400).json({ success: false, error: 'Wrong password!' });
     }
@@ -309,7 +311,7 @@ app.post('/api/register/donor', async (req, res) => {
     const phone = String(req.body.phone || '');
     const password = String(req.body.password || '');
     const salt = await genSalt(10);
-    const hashedPassword = await hash(password, salt);
+    const hashedPassword = await hash(password + PEPPER, salt);
     await new Donor({ fullName, phone, password: hashedPassword }).save();
     res.json({ success: true, message: 'Account created! Please login.' });
   } catch (err) {
@@ -326,7 +328,7 @@ app.put('/api/donors/:id', isAuthenticated, async (req, res) => {
     const updateData = { ...req.body };
     if (updateData.password) {
       const salt = await genSalt(10);
-      updateData.password = await hash(updateData.password, salt);
+      updateData.password = await hash(updateData.password + PEPPER, salt);
     }
     const donor = await Donor.findByIdAndUpdate(req.params.id, updateData, { new: true }).select('-password');
     if (!donor) return res.status(404).json({ error: 'Donor not found' });
@@ -358,7 +360,7 @@ app.post('/api/register/madrasa', (req, res, next) => {
       return res.status(400).json({ success: false, error: `Missing documents: ${missingFiles.join(', ')}` });
     }
     const salt = await genSalt(10);
-    const hashedPassword = await hash(password, salt);
+    const hashedPassword = await hash(password + PEPPER, salt);
     const documents = {};
     requiredFiles.forEach(field => {
       const file = req.files[field][0];
@@ -418,11 +420,11 @@ app.put('/api/change-password', async (req, res) => {
     if (!user) user = await Madrasa.findOne({ phone });
     if (!user) return res.status(404).json({ error: 'Account not found.' });
 
-    const isMatch = await compare(oldPassword, user.password);
+    const isMatch = await compare(oldPassword + PEPPER, user.password);
     if (!isMatch) return res.status(400).json({ error: 'Wrong current password!' });
 
     const salt = await genSalt(10);
-    const hashed = await hash(newPassword, salt);
+    const hashed = await hash(newPassword + PEPPER, salt);
     if (user.madrasaName) {
       await Madrasa.findByIdAndUpdate(user._id, { password: hashed });
     } else {
