@@ -28,9 +28,10 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: '*'
 }));
+app.options('*', cors());
 app.use(json());
 
 app.use(helmet());
